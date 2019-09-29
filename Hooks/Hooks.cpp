@@ -6,10 +6,6 @@
 
 using namespace asmjit;
 
-typedef int(*Func)(void);
-
-JitRuntime rt;
-
 LPVOID connectHookTramp;
 LPVOID sendHookTramp;
 
@@ -35,53 +31,39 @@ sockaddr* __stdcall _hookConnect(SOCKET sock, sockaddr* sa)
 void HookFunc(LPCWSTR moduleName, LPCSTR funcName, CodeHolder& hookCode, LPVOID trampoline, const int jmpLen)
 {
 	DWORD64 funcAddr = (DWORD64)GetProcAddress(GetModuleHandle(moduleName), funcName);
+	BYTE trampBytes[128];
+	CodeHolder jmpCode, trampCode;
+
 	DWORD prev;
 	VirtualProtect((LPVOID)funcAddr, jmpLen, PAGE_EXECUTE_READWRITE, &prev);
-	BYTE trampBytes[128];
-
-	CodeHolder jmpCode, trampCode;
-	jmpCode.init(rt.codeInfo());
-	trampCode.init(rt.codeInfo());
 	
-	// Trampoline code
-	x86::Assembler t(&trampCode);
-	t.push(x86::rax);
-	t.mov(x86::rax, funcAddr + 12);
-	t.jmp(x86::rax);
+	// Assemble trampoline
+	trampCode.init(CodeInfo(ArchInfo::kIdX64));
+	x86::Assembler trampAsm(&trampCode);
+	trampAsm.push(x86::rax);
+	trampAsm.mov(x86::rax, funcAddr + 12);
+	trampAsm.jmp(x86::rax);
 	
 	size_t trampLen = trampCode.codeSize() + hookCode.codeSize() + jmpLen;
 	// Allocate memory for trampoline
 	trampoline = VirtualAlloc(NULL, trampLen, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 
-	// Jump code
+	memcpy(trampBytes, hookCode.sectionById(0)->buffer().data(), hookCode.codeSize());
+	memcpy(&trampBytes[hookCode.codeSize()], (LPVOID)funcAddr, jmpLen);
+	memcpy(&trampBytes[hookCode.codeSize() + jmpLen], trampCode.sectionById(0)->buffer().data(), trampCode.codeSize());
+
+	// Build trampoline [Func Hook + Original Bytes + (Return + Offset)]
+	memcpy(trampoline, trampBytes, trampLen);
+
+	// Assemble jump
+	jmpCode.init(CodeInfo(ArchInfo::kIdX64));
 	x86::Assembler a(&jmpCode);
 	a.mov(x86::rax, (DWORD64)trampoline);
 	a.jmp(x86::rax);
 	a.pop(x86::rax);
-
-	Func asmJump, asmTramp, asmHook;
-
-	Error error =+ rt.add(&asmJump, &jmpCode);
-	error =+ rt.add(&asmTramp, &trampCode);
-	error =+ rt.add(&asmHook, &hookCode);
-
-	if (error) 
-	{
-		std::cout << "An error occured" << std::endl;
-		return;
-	}
-
-	// Copy hook func
-	memcpy(trampBytes, (LPVOID)asmHook, hookCode.codeSize());
-	// Copy original bytes
-	memcpy(&trampBytes[hookCode.codeSize()], (LPVOID)funcAddr, jmpLen);
-	// Copy trampoline jump
-	memcpy(&trampBytes[hookCode.codeSize() + jmpLen], (LPVOID)asmTramp, trampCode.codeSize());
-	// Build trampoline [Func Hook + Original Bytes + (Return + Offset)]
-	memcpy(trampoline, trampBytes, trampLen);
-
+	
 	// Patch jump
-	memcpy((LPVOID)funcAddr, asmJump, jmpLen);
+	memcpy((LPVOID)funcAddr, jmpCode.sectionById(0)->buffer().data(), jmpLen);
 	
 	// Fill difference with nops
 	if (jmpLen > jmpCode.codeSize())
@@ -101,7 +83,7 @@ void HookFunc(LPCWSTR moduleName, LPCSTR funcName, CodeHolder& hookCode, LPVOID 
 void WINAPI Entry()
 {
 	CodeHolder hookConnectCode;
-	hookConnectCode.init(rt.codeInfo());
+	hookConnectCode.init(CodeInfo(ArchInfo::kIdX64));
 
 	x86::Assembler hcp(&hookConnectCode);
 	hcp.push(x86::rcx);
@@ -126,5 +108,5 @@ void WINAPI Entry()
 	hcp.pop(x86::rcx);
 
 	HookFunc(L"ws2_32.dll", "connect", hookConnectCode, &connectHookTramp, 15);
-	HookFunc(L"ws2_32.dll", "send", hookConnectCode, &sendHookTramp, 15);
+	//HookFunc(L"ws2_32.dll", "send", hookConnectCode, &sendHookTramp, 15);
 }
