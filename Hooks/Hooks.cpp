@@ -10,15 +10,26 @@ typedef int(*Func)(void);
 
 JitRuntime rt;
 
-LPVOID connectHook;
 LPVOID connectHookTramp;
+LPVOID sendHookTramp;
 
-DWORD64 sockBackup;
-DWORD64 sockAddrBackup;
-
-void _hookConnect()
+sockaddr* __stdcall _hookConnect(SOCKET sock, sockaddr* sa)
 {
-	std::cout << "WTF??" << std::endl;
+	sockaddr* sockAddrNew = new sockaddr;
+	*sockAddrNew = *sa;
+
+	sockaddr_in* s = reinterpret_cast<sockaddr_in*>(sockAddrNew);
+	std::cout << "Connect -> " << sock << " < " << inet_ntoa(s->sin_addr) << ":" << ntohs(s->sin_port) << std::endl;
+
+	std::string hostname = inet_ntoa(s->sin_addr);
+
+	if (hostname != "127.0.0.1")
+	{
+		((sockaddr_in*)sockAddrNew)->sin_port = htons(8089);
+		((sockaddr_in*)sockAddrNew)->sin_addr.s_addr = inet_addr("127.0.0.1");
+	}
+
+	return sockAddrNew;
 }
 
 void HookFunc(LPCWSTR moduleName, LPCSTR funcName, CodeHolder& hookCode, LPVOID trampoline, const int jmpLen)
@@ -93,8 +104,27 @@ void WINAPI Entry()
 	hookConnectCode.init(rt.codeInfo());
 
 	x86::Assembler hcp(&hookConnectCode);
-	hcp.nop();
-	hcp.nop();
+	hcp.push(x86::rcx);
+	hcp.push(x86::rdx);
+	hcp.push(x86::r8);
+	hcp.push(x86::r9);
+	hcp.push(x86::r10);
+	hcp.push(x86::r11);
+	hcp.pushfq();
+	
+	hcp.mov(x86::rax, (DWORD64)_hookConnect);
+	hcp.call(x86::rax);
+	hcp.push(x86::rax);
+	hcp.pop(x86::rdx);
+
+	hcp.popfq();
+	hcp.pop(x86::r11);
+	hcp.pop(x86::r10);
+	hcp.pop(x86::r9);
+	hcp.pop(x86::r8);
+	hcp.add(x86::rsp, 8);
+	hcp.pop(x86::rcx);
 
 	HookFunc(L"ws2_32.dll", "connect", hookConnectCode, &connectHookTramp, 15);
+	HookFunc(L"ws2_32.dll", "send", hookConnectCode, &sendHookTramp, 15);
 }
