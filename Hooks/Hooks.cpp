@@ -6,6 +6,7 @@
 
 using namespace asmjit;
 
+sockaddr* sockAddrNew;
 LPVOID connectHookTramp;
 LPVOID sendHookTramp;
 
@@ -21,12 +22,12 @@ WSAPROTOCOL_INFO GetSockInfo(SOCKET s, bool &result)
 	return info;
 }
 
-sockaddr* __stdcall _hookConnectPatch(SOCKET sock, sockaddr* sa, int namelen)
+sockaddr* __stdcall asm_hookConnectPatch(SOCKET sock, sockaddr* sa, int namelen)
 {
 	bool result;
 	WSAPROTOCOL_INFO sockInfo = GetSockInfo(sock, result);
 
-	sockaddr* sockAddrNew = new sockaddr;
+	sockAddrNew = new sockaddr;
 	*sockAddrNew = *sa;
 
 	sockaddr_in* s = reinterpret_cast<sockaddr_in*>(sockAddrNew);
@@ -43,27 +44,70 @@ sockaddr* __stdcall _hookConnectPatch(SOCKET sock, sockaddr* sa, int namelen)
 	return sockAddrNew;
 }
 
-LPVOID _buildHookConnectCode(LPVOID& trampoline)
+void __stdcall asm_sendSockAddr(SOCKET s, sockaddr* sa)
+{
+	bool result;
+	WSAPROTOCOL_INFO sockInfo = GetSockInfo(s, result);
+
+	sockaddr_in* server = (struct sockaddr_in*)sa;
+
+	ULONG addr = htonl(server->sin_addr.s_addr);
+	USHORT port = server->sin_port;
+
+	std::cout << "Sending sock dest..." << std::endl;
+	//std::cout << "Sending dest sock addr: " << inet_ntoa(server->sin_addr) << ":" << ntohs(server->sin_port) << std::endl;
+
+	int resultSend;
+	if (sockInfo.iProtocol == 6)
+	{
+		char frame[6];
+
+		memcpy(frame, &port, sizeof(USHORT));
+		memcpy(&frame[2], &addr, sizeof(ULONG));
+
+		resultSend = send(s, (const char*)frame, sizeof(frame), 0);
+	}
+	else if (sockInfo.iProtocol == 17)
+	{
+		char frame[8];
+		USHORT opcode = htons(1337);
+
+		memcpy(frame, &opcode, sizeof(USHORT));
+		memcpy(&frame[2], &port, sizeof(USHORT));
+		memcpy(&frame[4], &addr, sizeof(ULONG));
+
+		resultSend = send(s, (const char*)frame, sizeof(frame), 0);
+	}
+	else
+	{
+		std::cout << "Unknown protocol: " << sockInfo.iProtocol << std::endl;
+	}
+
+	delete sockAddrNew;
+}
+
+LPVOID buildHookConnectCode(LPVOID& trampoline)
 {
 	CodeHolder hookConnectCode;
 	hookConnectCode.init(CodeInfo(ArchInfo::kIdX64));
 
-	// Backup registers
 	x86::Assembler hcp(&hookConnectCode);
-	hcp.push(x86::rcx);
+
+	// Backup registers
 	hcp.push(x86::rdx);
+	hcp.push(x86::rcx);
 	hcp.push(x86::r8);
 	hcp.push(x86::r9);
 	hcp.push(x86::r10);
 	hcp.push(x86::r11);
 	hcp.pushfq();
 
-	hcp.sub(x86::rsp, 16);
-	hcp.mov(x86::rax, (DWORD64)_hookConnectPatch);
+	hcp.sub(x86::rsp, 32);
+	hcp.mov(x86::rax, (DWORD64)asm_hookConnectPatch);
 	hcp.call(x86::rax);
-	hcp.push(x86::rax); // Push return
-	hcp.pop(x86::rdx); // Overwrite sock addr
-	hcp.adc(x86::rsp, 16);
+	hcp.push(x86::rax);
+	hcp.pop(x86::rdx); // Overwrite return value
+	hcp.add(x86::rsp, 32);
 
 	// Restore registers
 	hcp.popfq();
@@ -71,13 +115,52 @@ LPVOID _buildHookConnectCode(LPVOID& trampoline)
 	hcp.pop(x86::r10);
 	hcp.pop(x86::r9);
 	hcp.pop(x86::r8);
-	hcp.add(x86::rsp, 8);
 	hcp.pop(x86::rcx);
+	hcp.push(x86::rcx);
+	// This leaves the original RDX, RCX on the stack
 
 	hcp.sub(x86::rsp, 32);
 	hcp.mov(x86::rax, (DWORD64)trampoline);
 	hcp.call(x86::rax);
 	hcp.add(x86::rsp, 32);
+
+	// Backup registers
+	hcp.push(x86::rcx);
+	hcp.push(x86::rdx);
+
+	x86::Mem rcxk = x86::ptr(x86::rsp);
+	rcxk.addOffset(16);
+	x86::Mem rdxk = x86::ptr(x86::rsp);
+	rdxk.addOffset(24);
+	hcp.mov(x86::rcx, rcxk);
+	hcp.mov(x86::rdx, rdxk);
+
+	hcp.push(x86::rax);
+	hcp.push(x86::rdi);
+	hcp.push(x86::r8);
+	hcp.push(x86::r9);
+	hcp.push(x86::r10);
+	hcp.push(x86::r11);
+	hcp.pushfq();
+
+	hcp.sub(x86::rsp, 32);
+	hcp.mov(x86::rax, (DWORD64)asm_sendSockAddr);
+	hcp.call(x86::rax);
+	hcp.add(x86::rsp, 32);
+
+	// Restore registers
+	hcp.popfq();
+	hcp.pop(x86::r11);
+	hcp.pop(x86::r10);
+	hcp.pop(x86::r9);
+	hcp.pop(x86::r8);
+	hcp.pop(x86::rdi);
+	hcp.pop(x86::rax);
+	//hcp.mov(x86::rax, 0x0);
+	hcp.pop(x86::rdx);
+	hcp.pop(x86::rcx);
+
+	hcp.add(x86::rsp, 16);
 	hcp.ret();
 
 	uint8_t* data = hookConnectCode.sectionById(0)->buffer().data();
@@ -144,6 +227,6 @@ void HookFunc(LPCWSTR moduleName, LPCSTR funcName, JitHookCode jitHookCode, LPVO
 
 void WINAPI Entry()
 {
-	HookFunc(L"ws2_32.dll", "connect", &_buildHookConnectCode, &connectHookTramp, 15);
+	HookFunc(L"ws2_32.dll", "connect", &buildHookConnectCode, &connectHookTramp, 15);
 	//HookFunc(L"ws2_32.dll", "send", hookConnectCode, &sendHookTramp, 15);
 }
