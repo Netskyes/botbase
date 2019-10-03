@@ -6,7 +6,6 @@
 
 using namespace asmjit;
 
-sockaddr* sockAddrNew;
 LPVOID connectHookTramp;
 LPVOID sendHookTramp;
 
@@ -22,12 +21,12 @@ WSAPROTOCOL_INFO GetSockInfo(SOCKET s, bool &result)
 	return info;
 }
 
-sockaddr* __stdcall asm_hookConnectPatch(SOCKET sock, sockaddr* sa, int namelen)
+sockaddr* asm_hookConnectPatch(SOCKET sock, sockaddr* sa, int namelen)
 {
 	bool result;
 	WSAPROTOCOL_INFO sockInfo = GetSockInfo(sock, result);
 
-	sockAddrNew = new sockaddr;
+	sockaddr* sockAddrNew = new sockaddr;
 	*sockAddrNew = *sa;
 
 	sockaddr_in* s = reinterpret_cast<sockaddr_in*>(sockAddrNew);
@@ -37,14 +36,14 @@ sockaddr* __stdcall asm_hookConnectPatch(SOCKET sock, sockaddr* sa, int namelen)
 
 	if (hostname != "127.0.0.1")
 	{
-		((sockaddr_in*)sockAddrNew)->sin_port = htons(8089);
+		((sockaddr_in*)sockAddrNew)->sin_port = htons(9015);
 		((sockaddr_in*)sockAddrNew)->sin_addr.s_addr = inet_addr("127.0.0.1");
 	}
 
 	return sockAddrNew;
 }
 
-void __stdcall asm_sendSockAddr(SOCKET s, sockaddr* sa)
+void asm_sendSockAddr(SOCKET s, sockaddr* sa)
 {
 	bool result;
 	WSAPROTOCOL_INFO sockInfo = GetSockInfo(s, result);
@@ -54,8 +53,7 @@ void __stdcall asm_sendSockAddr(SOCKET s, sockaddr* sa)
 	ULONG addr = htonl(server->sin_addr.s_addr);
 	USHORT port = server->sin_port;
 
-	std::cout << "Sending sock dest..." << std::endl;
-	//std::cout << "Sending dest sock addr: " << inet_ntoa(server->sin_addr) << ":" << ntohs(server->sin_port) << std::endl;
+	std::cout << "Sending dest: " << inet_ntoa(server->sin_addr) << ":" << ntohs(server->sin_port) << std::endl;
 
 	int resultSend;
 	if (sockInfo.iProtocol == 6)
@@ -82,8 +80,6 @@ void __stdcall asm_sendSockAddr(SOCKET s, sockaddr* sa)
 	{
 		std::cout << "Unknown protocol: " << sockInfo.iProtocol << std::endl;
 	}
-
-	delete sockAddrNew;
 }
 
 LPVOID buildHookConnectCode(LPVOID& trampoline)
@@ -135,7 +131,6 @@ LPVOID buildHookConnectCode(LPVOID& trampoline)
 	hcp.mov(x86::rcx, rcxk);
 	hcp.mov(x86::rdx, rdxk);
 
-	hcp.push(x86::rax);
 	hcp.push(x86::rdi);
 	hcp.push(x86::r8);
 	hcp.push(x86::r9);
@@ -155,11 +150,11 @@ LPVOID buildHookConnectCode(LPVOID& trampoline)
 	hcp.pop(x86::r9);
 	hcp.pop(x86::r8);
 	hcp.pop(x86::rdi);
-	hcp.pop(x86::rax);
-	//hcp.mov(x86::rax, 0x0);
 	hcp.pop(x86::rdx);
 	hcp.pop(x86::rcx);
-
+	
+	hcp.mov(x86::rax, 0x0);
+	
 	hcp.add(x86::rsp, 16);
 	hcp.ret();
 
@@ -228,5 +223,5 @@ void HookFunc(LPCWSTR moduleName, LPCSTR funcName, JitHookCode jitHookCode, LPVO
 void WINAPI Entry()
 {
 	HookFunc(L"ws2_32.dll", "connect", &buildHookConnectCode, &connectHookTramp, 15);
-	//HookFunc(L"ws2_32.dll", "send", hookConnectCode, &sendHookTramp, 15);
+	//HookFunc(L"user32.dll", "BlockInput", &, &sendHookTramp, 15);
 }

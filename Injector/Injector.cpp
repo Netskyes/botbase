@@ -92,11 +92,17 @@ int main()
 		std::cout << "Process name: ";
 		std::cin >> procName;
 
-		bool result = Inject(procName.c_str(), "D:/SoftwareDev/CSharp/BotBase/x64/Debug/Hooks.dll");
-		if (result)
+		bool result = false;
+		do 
 		{
-			std::cout << "Injected successfully" << std::endl;
-		}
+			result = Inject(procName.c_str(), "D:/SoftwareDev/CSharp/BotBase/x64/Debug/Hooks.dll");
+			if (result)
+			{
+				std::cout << "Injected successfully" << std::endl;
+			}
+
+			Sleep(100);
+		} while (!result);
 	}
 
 	return 0;
