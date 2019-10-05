@@ -8,6 +8,7 @@ using namespace asmjit;
 
 LPVOID connectHookTramp;
 LPVOID sendHookTramp;
+LPVOID wsaSendHookTramp;
 
 typedef LPVOID (*JitHookCode)(LPVOID& trampoline);
 
@@ -80,6 +81,22 @@ void asm_sendSockAddr(SOCKET s, sockaddr* sa)
 	{
 		std::cout << "Unknown protocol: " << sockInfo.iProtocol << std::endl;
 	}
+}
+
+LPVOID buildHookWsaConnectCode(LPVOID& trampoline)
+{
+	CodeHolder hookConnectCode;
+	hookConnectCode.init(CodeInfo(ArchInfo::kIdX64));
+
+	x86::Assembler hcp(&hookConnectCode);
+	hcp.nop();
+	hcp.nop();
+
+	uint8_t* data = hookConnectCode.sectionById(0)->buffer().data();
+	LPVOID hookFunc = VirtualAlloc(NULL, hookConnectCode.codeSize(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	memcpy(hookFunc, data, hookConnectCode.codeSize());
+
+	return hookFunc;
 }
 
 LPVOID buildHookConnectCode(LPVOID& trampoline)
@@ -223,5 +240,5 @@ void HookFunc(LPCWSTR moduleName, LPCSTR funcName, JitHookCode jitHookCode, LPVO
 void WINAPI Entry()
 {
 	HookFunc(L"ws2_32.dll", "connect", &buildHookConnectCode, &connectHookTramp, 15);
-	//HookFunc(L"user32.dll", "BlockInput", &, &sendHookTramp, 15);
+	HookFunc(L"ws2_32.dll", "WSAConnect", &buildHookWsaConnectCode, &wsaSendHookTramp, 15);
 }

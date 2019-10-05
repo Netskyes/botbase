@@ -181,7 +181,7 @@ namespace Network
             }
             catch (Exception e)
             {
-                //Utils.Log(e.Message + " " + e.StackTrace, "error");
+                Logger.LogException(e);
             }
 
             return packet;
